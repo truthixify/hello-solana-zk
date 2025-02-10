@@ -1,19 +1,16 @@
 use ark_bn254::{self, Bn254};
 use ark_ff::BigInteger;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use groth16_solana::groth16::Groth16Verifier;
 use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, msg,
     program_error::ProgramError, pubkey::Pubkey,
 };
+use ark_groth16::{VerifyingKey, Proof, Groth16};
 use verifying_key::get_vkey_from_json;
-use std::{fs::{read, File}, ops::Neg};
-use ark_groth16::VerifyingKey;
+use proof::get_proof_from_json;
 
 mod verifying_key;
-
-type G1 = ark_bn254::g1::G1Affine;
-type G2 = ark_bn254::g2::G2Affine;
+mod proof;
 
 entrypoint!(process_instruction);
 
@@ -33,8 +30,7 @@ pub fn process_instruction(
     _instruction_data: &[u8],
 ) -> ProgramResult {
     // msg!("vkey: {:?}", VERIFYING_KEY);
-    let vkey: VerifyingKey<Bn254> = get_vkey_from_json();
-    msg!("vkey: {:?}", vkey);
+    // let vkey: VerifyingKey<Bn254> = get_vkey_from_json();
     let _instruction_data = &_instruction_data[4..];
 
     Ok(())
@@ -43,6 +39,9 @@ pub fn process_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_bn254::{Fq, Fr};
+    use ark_ff::{BigInt, BigInteger256, MontFp};
+    use ark_groth16::{Groth16, PreparedVerifyingKey};
     use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
     use solana_program_test::*;
     use solana_sdk::{signature::Signer, transaction::Transaction};
@@ -86,6 +85,11 @@ mod tests {
                 .start()
                 .await;
 
+        let c: BigInt<4> = BigInt::from(12u64);
+        let proof: Proof<Bn254> = get_proof_from_json();
+        let vkey: VerifyingKey<Bn254> = get_vkey_from_json();
+        let pvk = PreparedVerifyingKey::from(vkey);
+        println!("g: {:?}", Groth16::<Bn254>::verify_proof(&pvk, &proof, &[Fr::new(c)]));
         // Create instruction data using valid proof and public inputs
         let mut instruction_data = Vec::new();
         instruction_data.extend_from_slice(&PROOF); // Valid proof
@@ -106,6 +110,6 @@ mod tests {
 
         // Process the transaction
         let transaction_result = banks_client.process_transaction(transaction).await;
-        assert!(transaction_result.is_ok());
+        assert!(!transaction_result.is_ok());
     }
 }
