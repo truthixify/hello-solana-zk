@@ -2,6 +2,10 @@
   "dependencies": {
     "bn": "^1.0.5",
     "bn.js": "^5.2.1",
-    "ffjavascript": "^0.3.1"
+    "ffjavascript": "^0.3.1",
+    "snarkjs": "^0.7.5"
+  },
+  "scripts": {
+    "prettier": "prettier --write **/*.js"
   }
 }

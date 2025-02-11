@@ -1,39 +1,59 @@
-use ark_bn254::{self, Bn254};
-use ark_ff::BigInteger;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+use groth16_solana::groth16::Groth16Verifier;
 use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, msg,
     program_error::ProgramError, pubkey::Pubkey,
 };
-use ark_groth16::{VerifyingKey, Proof, Groth16};
-use verifying_key::get_vkey_from_json;
-use proof::get_proof_from_json;
-
-mod verifying_key;
+use verifying_key::VERIFYINGKEY;
 mod proof;
+mod verifying_key;
 
 entrypoint!(process_instruction);
-
-fn change_endianness(bytes: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    for b in bytes.chunks(32) {
-        for byte in b.iter().rev() {
-            vec.push(*byte);
-        }
-    }
-    vec
-}
 
 pub fn process_instruction(
     _program_id: &Pubkey,
     _accounts: &[AccountInfo],
     _instruction_data: &[u8],
 ) -> ProgramResult {
-    // msg!("vkey: {:?}", VERIFYING_KEY);
-    // let vkey: VerifyingKey<Bn254> = get_vkey_from_json();
-    let _instruction_data = &_instruction_data[4..];
+    let proof_a = &_instruction_data[..64]
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let proof_b = &_instruction_data[64..192]
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let proof_c = &_instruction_data[192..256]
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let public_signals: [[u8; 32]; 1] = chunk_instruction_data(&_instruction_data[256..])
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
 
+    let mut verifier =
+        Groth16Verifier::new(proof_a, proof_b, proof_c, &public_signals, &VERIFYINGKEY)
+            .map_err(|_| ProgramError::Custom(0))?;
+
+    match verifier.verify() {
+        Ok(true) => {
+            msg!("Proof verification succeeded");
+        }
+        Ok(false) => {
+            msg!("Proof is invalid");
+        }
+        Err(err) => {
+            msg!("Proof verification failed: {:?}", err);
+            return Err(ProgramError::InvalidInstructionData);
+        }
+    }
     Ok(())
+}
+
+fn chunk_instruction_data(data: &[u8]) -> Vec<[u8; 32]> {
+    data.chunks(32)
+        .map(|chunk| {
+            let mut array = [0u8; 32];
+            array[..chunk.len()].copy_from_slice(chunk);
+            array
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -42,30 +62,13 @@ mod tests {
     use ark_bn254::{Fq, Fr};
     use ark_ff::{BigInt, BigInteger256, MontFp};
     use ark_groth16::{Groth16, PreparedVerifyingKey};
+    use proof::*;
     use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
     use solana_program_test::*;
-    use solana_sdk::{signature::Signer, transaction::Transaction};
-
-    const PROOF: [u8; 256] = [
-        220, 67, 64, 26, 46, 89, 237, 206, 15, 62, 21, 122, 24, 223, 42, 22, 243, 14, 211, 63, 155,
-        236, 28, 25, 32, 228, 117, 2, 230, 187, 197, 28, 179, 146, 150, 73, 225, 36, 169, 139, 248,
-        70, 127, 213, 77, 188, 167, 221, 120, 181, 83, 95, 208, 45, 205, 14, 155, 176, 35, 35, 32,
-        228, 41, 17, 35, 12, 113, 210, 84, 88, 150, 59, 160, 143, 203, 121, 207, 25, 220, 96, 134,
-        155, 19, 132, 162, 132, 221, 233, 233, 88, 24, 2, 92, 192, 47, 38, 250, 162, 185, 124, 165,
-        29, 200, 187, 206, 167, 52, 42, 6, 240, 209, 168, 129, 247, 90, 169, 187, 129, 200, 9, 16,
-        143, 113, 222, 12, 64, 93, 35, 77, 46, 70, 170, 56, 155, 35, 25, 87, 239, 245, 249, 9, 201,
-        86, 100, 92, 209, 252, 123, 140, 49, 227, 218, 120, 237, 11, 222, 53, 222, 188, 34, 40,
-        233, 251, 97, 197, 229, 23, 206, 38, 253, 106, 16, 64, 170, 215, 127, 112, 250, 155, 109,
-        139, 38, 226, 241, 117, 229, 195, 194, 119, 104, 178, 31, 254, 161, 121, 197, 188, 225,
-        199, 97, 128, 203, 57, 6, 74, 252, 222, 0, 41, 75, 233, 228, 192, 16, 91, 12, 219, 113, 0,
-        154, 141, 117, 194, 2, 223, 245, 198, 78, 158, 129, 38, 138, 83, 169, 99, 130, 74, 119,
-        230, 159, 21, 197, 180, 231, 25, 125, 185, 11, 189, 30, 119, 60, 231, 212, 234, 38,
-    ];
-
-    pub const PUBLIC_INPUTS: [[u8; 32]; 1] = [[
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 12,
-    ]];
+    use solana_sdk::{
+        alt_bn128::compression::prelude::G1, precompiles::Verify, signature::Signer,
+        transaction::Transaction,
+    };
 
     // Helper function to create a mock AccountInfo with a specified lifetime
     fn mock_account_info<'a>(
@@ -85,20 +88,15 @@ mod tests {
                 .start()
                 .await;
 
-        let c: BigInt<4> = BigInt::from(12u64);
-        let proof: Proof<Bn254> = get_proof_from_json();
-        let vkey: VerifyingKey<Bn254> = get_vkey_from_json();
-        let pvk = PreparedVerifyingKey::from(vkey);
-        println!("g: {:?}", Groth16::<Bn254>::verify_proof(&pvk, &proof, &[Fr::new(c)]));
         // Create instruction data using valid proof and public inputs
         let mut instruction_data = Vec::new();
-        instruction_data.extend_from_slice(&PROOF); // Valid proof
-        for input in PUBLIC_INPUTS.iter() {
+        instruction_data.extend_from_slice(&PROOF);
+        for input in PUBLIC_SIGNALS.iter() {
             instruction_data.extend_from_slice(input); // Valid public inputs
         }
 
         // Create the instruction to invoke the program
-        let instruction = solana_program::instruction::Instruction::new_with_borsh(
+        let instruction = solana_program::instruction::Instruction::new_with_bytes(
             program_id,
             &instruction_data,
             vec![],
@@ -110,6 +108,6 @@ mod tests {
 
         // Process the transaction
         let transaction_result = banks_client.process_transaction(transaction).await;
-        assert!(!transaction_result.is_ok());
+        assert!(transaction_result.is_ok());
     }
 }
