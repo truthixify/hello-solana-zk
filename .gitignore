@@ -3,3 +3,4 @@
 **/build
 **.ptau
 **/target
+**/.DS_Store

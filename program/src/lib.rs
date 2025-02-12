@@ -1,11 +1,17 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 use groth16_solana::groth16::Groth16Verifier;
 use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, msg,
     program_error::ProgramError, pubkey::Pubkey,
 };
+use std::ops::Neg;
 use verifying_key::VERIFYINGKEY;
+use proof::{PUBLIC_SIGNALS, PROOF};
+
 mod proof;
 mod verifying_key;
+
+type G1 = ark_bn254::g1::G1Affine;
 
 entrypoint!(process_instruction);
 
@@ -14,9 +20,25 @@ pub fn process_instruction(
     _accounts: &[AccountInfo],
     _instruction_data: &[u8],
 ) -> ProgramResult {
-    let proof_a = &_instruction_data[..64]
-        .try_into()
+    let proof_a: G1 = G1::deserialize_with_mode(
+        &*[&change_endianness(&PROOF[0..64]), &[0u8][..]].concat(),
+        Compress::No,
+        Validate::Yes,
+    )
+    .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let mut proof_a_neg = [0u8; 65];
+    proof_a
+        .neg()
+        .x
+        .serialize_with_mode(&mut proof_a_neg[..32], Compress::No)
         .map_err(|_| ProgramError::InvalidInstructionData)?;
+    proof_a
+        .neg()
+        .y
+        .serialize_with_mode(&mut proof_a_neg[32..], Compress::No)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+
+    let proof_a: [u8; 64] = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
     let proof_b = &_instruction_data[64..192]
         .try_into()
         .map_err(|_| ProgramError::InvalidInstructionData)?;
@@ -28,7 +50,7 @@ pub fn process_instruction(
         .map_err(|_| ProgramError::InvalidInstructionData)?;
 
     let mut verifier =
-        Groth16Verifier::new(proof_a, proof_b, proof_c, &public_signals, &VERIFYINGKEY)
+        Groth16Verifier::new(&proof_a, proof_b, proof_c, &public_signals, &VERIFYINGKEY)
             .map_err(|_| ProgramError::Custom(0))?;
 
     match verifier.verify() {
@@ -56,29 +78,24 @@ fn chunk_instruction_data(data: &[u8]) -> Vec<[u8; 32]> {
         .collect()
 }
 
+fn change_endianness(bytes: &[u8]) -> Vec<u8> {
+    let mut vec = Vec::new();
+    for b in bytes.chunks(32) {
+        for byte in b.iter().rev() {
+            vec.push(*byte);
+        }
+    }
+    vec
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::{Fq, Fr};
-    use ark_ff::{BigInt, BigInteger256, MontFp};
-    use ark_groth16::{Groth16, PreparedVerifyingKey};
-    use proof::*;
     use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
     use solana_program_test::*;
-    use solana_sdk::{
-        alt_bn128::compression::prelude::G1, precompiles::Verify, signature::Signer,
+    use solana_sdk::{signature::Signer,
         transaction::Transaction,
     };
-
-    // Helper function to create a mock AccountInfo with a specified lifetime
-    fn mock_account_info<'a>(
-        key: &'a Pubkey,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-        owner: &'a Pubkey,
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, true, lamports, data, owner, false, 0)
-    }
 
     #[tokio::test]
     async fn test_transaction() {

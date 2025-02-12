@@ -1,130 +1,167 @@
-import { buildBn128, utils } from 'ffjavascript';
-const { unstringifyBigInts } = utils;
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const fs = require('fs');
+import { utils } from 'ffjavascript'
+import fs from 'fs'
+const unstringifyBigInts = utils.unstringifyBigInts
+const stringifyBigInts = utils.stringifyBigInts
+const leInt2Buff = utils.leInt2Buff
+import * as snarkjs from 'snarkjs'
+const FIELD_SIZE = BigInt(
+    '21888242871839275222246405745257275088548364400416034343698204186575808495617'
+)
 
-function to32ByteBuffer(bigInt) {
-    const hexString = bigInt.toString(16).padStart(64, '0'); // Pad to 64 hex characters (32 bytes)
-    const buffer = Buffer.from(hexString, 'hex');
-    return buffer;
-}
+async function fullProve(proofInputs, wasmPath, zkeyPath) {
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+        stringifyBigInts(proofInputs),
+        wasmPath,
+        zkeyPath
+    )
 
-function g1Uncompressed(curve, p1Raw) {
-    let p1 = curve.G1.fromObject(p1Raw);
-
-    let buff = new Uint8Array(64); // 64 bytes for G1 uncompressed
-    curve.G1.toRprUncompressed(buff, 0, p1);
-
-    return Buffer.from(buff);
-}
-
-// Function to negate G1 element
-function negateG1(curve, buffer) {
-    let p1 = curve.G1.fromRprUncompressed(buffer, 0);
-    let negatedP1 = curve.G1.neg(p1);
-    let negatedBuffer = new Uint8Array(64);
-    curve.G1.toRprUncompressed(negatedBuffer, 0, negatedP1);
-    return Buffer.from(negatedBuffer);
-}
-
-// Function to reverse endianness of a buffer
-function reverseEndianness(buffer) {
-    return Buffer.from(buffer.reverse());
-}
-
-async function negateAndSerializeG1(curve, reversedP1Uncompressed) {
-    if (
-        !reversedP1Uncompressed ||
-        !(
-            reversedP1Uncompressed instanceof Uint8Array ||
-            Buffer.isBuffer(reversedP1Uncompressed)
-        )
-    ) {
-        console.error(
-            'Invalid input to negateAndSerializeG1:',
-            reversedP1Uncompressed
-        );
-        throw new Error('Invalid input to negateAndSerializeG1');
+    return {
+        proof,
+        publicSignals,
     }
-    // Negate the G1 point
-    let p1 = curve.G1.toAffine(
-        curve.G1.fromRprUncompressed(reversedP1Uncompressed, 0)
-    );
-    let negatedP1 = curve.G1.neg(p1);
-
-    // Serialize the negated point
-    // The serialization method depends on your specific library
-    let serializedNegatedP1 = new Uint8Array(64); // 32 bytes for x and 32 bytes for y
-    curve.G1.toRprUncompressed(serializedNegatedP1, 0, negatedP1);
-    // curve.G1.toRprUncompressed(serializedNegatedP1, 32, negatedP1.y);
-
-    // Change endianness if necessary
-    let proof_a = reverseEndianness(serializedNegatedP1);
-
-    return proof_a;
 }
 
-function g2Uncompressed(curve, p2Raw) {
-    let p2 = curve.G2.fromObject(p2Raw);
+function parseProofToBytesArray(proof, compressed = false) {
+    const mydata = proof;
+    try {
+        for (const i in mydata) {
+            if (i == 'pi_a' || i == 'pi_c') {
+                for (const j in mydata[i]) {
+                    mydata[i][j] = Array.from(
+                        leInt2Buff(unstringifyBigInts(mydata[i][j]), 32)
+                    ).reverse()
+                }
+            } else if (i == 'pi_b') {
+                for (const j in mydata[i]) {
+                    for (const z in mydata[i][j]) {
+                        mydata[i][j][z] = Array.from(
+                            leInt2Buff(unstringifyBigInts(mydata[i][j][z]), 32)
+                        )
+                    }
+                }
+            }
+        }
 
-    let buff = new Uint8Array(128); // 128 bytes for G2 uncompressed
-    curve.G2.toRprUncompressed(buff, 0, p2);
-
-    return Buffer.from(buff);
+        if (compressed) {
+            const proofA = mydata.pi_a[0];
+            // negate proof by reversing the bitmask
+            const proofAIsPositive = yElementIsPositiveG1(
+                BigInt(mydata.pi_a[1])
+            )
+                ? false
+                : true;
+            proofA[0] = addBitmaskToByte(proofA[0], proofAIsPositive)
+            const proofB = mydata.pi_b[0].flat().reverse()
+            const proofBY = mydata.pi_b[1].flat().reverse()
+            const proofBIsPositive = yElementIsPositiveG2(
+                BigInt(
+                    '0x' + Buffer.from(proofBY.slice(0, 32)).toString('hex')
+                ),
+                BigInt(
+                    '0x' + Buffer.from(proofBY.slice(32, 64)).toString('hex')
+                )
+            )
+            proofB[0] = addBitmaskToByte(proofB[0], proofBIsPositive)
+            const proofC = mydata.pi_c[0];
+            const proofCIsPositive = yElementIsPositiveG1(
+                BigInt(mydata.pi_c[1])
+            )
+            proofC[0] = addBitmaskToByte(proofC[0], proofCIsPositive)
+            return {
+                proofA,
+                proofB,
+                proofC,
+            }
+        }
+        return {
+            proofA: [mydata.pi_a[0], mydata.pi_a[1]].flat(),
+            proofB: [
+                mydata.pi_b[0].flat().reverse(),
+                mydata.pi_b[1].flat().reverse(),
+            ].flat(),
+            proofC: [mydata.pi_c[0], mydata.pi_c[1]].flat(),
+        }
+    } catch (error) {
+        console.error('Error while parsing the proof.', error.message)
+        throw error;
+    }
 }
 
-export async function proofData(proof, publicSignals) {
-    let curve = await buildBn128();
-    let proofProc = unstringifyBigInts(proof);
-    publicSignals = unstringifyBigInts(publicSignals);
+// mainly used to parse the public signals of groth16 fullProve
+function parseToBytesArray(publicSignals) {
+    try {
+        const publicInputsBytes = new Array()
+        for (const i in publicSignals) {
+            const ref = Array.from([
+                ...leInt2Buff(unstringifyBigInts(publicSignals[i]), 32),
+            ]).reverse()
+            publicInputsBytes.push(ref)
+        }
 
-    let pi_a = g1Uncompressed(curve, proofProc.pi_a);
-    pi_a = reverseEndianness(pi_a);
-    pi_a = await negateAndSerializeG1(curve, pi_a);
+        return publicInputsBytes;
+    } catch (error) {
+        console.error('Error while parsing public inputs.', error.message)
+        throw error;
+    }
+}
 
-    const pi_b = g2Uncompressed(curve, proofProc.pi_b);
+function yElementIsPositiveG1(yElement) {
+    return yElement <= FIELD_SIZE - yElement;
+}
 
-    const pi_c = g1Uncompressed(curve, proofProc.pi_c);
+function yElementIsPositiveG2(yElement1, yElement2) {
+    const fieldMidpoint = FIELD_SIZE / BigInt(2)
 
-    // Assuming publicSignals has only one element
-    const publicSignalsBuffer = to32ByteBuffer(BigInt(publicSignals));
+    // Compare the first component of the y coordinate
+    if (yElement1 < fieldMidpoint) {
+        return true;
+    } else if (yElement1 > fieldMidpoint) {
+        return false;
+    }
 
-    const serializedData = Buffer.concat([
-        pi_a,
-        pi_b,
-        pi_c,
-        publicSignalsBuffer,
-    ]);
+    // If the first component is equal to the midpoint, compare the second component
+    return yElement2 < fieldMidpoint;
+}
 
-    return Array.from(serializedData);
+function addBitmaskToByte(byte, yIsPositive) {
+    if (!yIsPositive) {
+        return (byte |= 1 << 7)
+    } else {
+        return byte;
+    }
 }
 
 export async function generateRustProof() {
-    const inputPath1 = process.argv[2];
-    const inputPath2 = process.argv[3];
-    if (!inputPath1 || !inputPath2) {
-        throw new Error('Input path not specified');
+    const wasmPath = process.argv[2];
+    const zkeyPath = process.argv[3];
+    const proofInputPath = process.argv[4];
+    if (!proofInputPath) {
+        throw new Error('Input path not specified')
     }
 
-    const outputPath = process.argv[4]
-        ? `${process.argv[4]}/proof.rs`
+    const outputPath = process.argv[5]
+        ? `${process.argv[5]}/proof.rs`
         : 'proof.rs';
-    const fileData1 = fs.readFileSync(inputPath1, 'utf8');
-    const fileData2 = fs.readFileSync(inputPath2, 'utf8');
-    const proof = JSON.parse(fileData1);
-    const publicSignals = JSON.parse(fileData2);
-    const data = await proofData(proof, publicSignals);
-    const proofArr = data.slice(0, 256);
-    const publicSignalsArr = data.slice(256);
+    const proofInputFile = fs.readFileSync(proofInputPath, 'utf8')
+    const proofInputs = JSON.parse(proofInputFile)
+
+    const { proof, publicSignals } = await fullProve(
+        proofInputs,
+        wasmPath,
+        zkeyPath
+    )
+
+    let proofArr = parseProofToBytesArray(proof)
+    proofArr = [...proofArr.proofA, ...proofArr.proofB, ...proofArr.proofC];
+    const publicSignalsArr = parseToBytesArray(publicSignals)
 
     const rustOutput = `pub const PROOF: [u8; 256] = [${proofArr}];
 
 pub const PUBLIC_SIGNALS: [[u8; 32]; 1] = [[${publicSignalsArr}]];
 `;
 
-    fs.writeFileSync(outputPath, rustOutput);
-    console.log('✅ Rust proof written to', outputPath);
+    fs.writeFileSync(outputPath, rustOutput)
+    console.log('✅ Rust proof written to', outputPath)
 }
 
-generateRustProof().catch(console.error);
+generateRustProof().catch(console.error)
