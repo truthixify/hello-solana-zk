@@ -1,5 +1,4 @@
 import { utils } from 'ffjavascript'
-import fs from 'fs'
 const unstringifyBigInts = utils.unstringifyBigInts
 const stringifyBigInts = utils.stringifyBigInts
 const leInt2Buff = utils.leInt2Buff
@@ -8,7 +7,7 @@ const FIELD_SIZE = BigInt(
     '21888242871839275222246405745257275088548364400416034343698204186575808495617'
 )
 
-async function fullProve(proofInputs, wasmPath, zkeyPath) {
+export async function fullProve(proofInputs, wasmPath, zkeyPath) {
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(
         stringifyBigInts(proofInputs),
         wasmPath,
@@ -21,7 +20,7 @@ async function fullProve(proofInputs, wasmPath, zkeyPath) {
     }
 }
 
-function parseProofToBytesArray(proof, compressed = false) {
+export function parseProofToBytesArray(proof, compressed = false) {
     const mydata = proof;
     try {
         for (const i in mydata) {
@@ -87,8 +86,7 @@ function parseProofToBytesArray(proof, compressed = false) {
     }
 }
 
-// mainly used to parse the public signals of groth16 fullProve
-function parseToBytesArray(publicSignals) {
+export function parseToBytesArray(publicSignals) {
     try {
         const publicInputsBytes = new Array()
         for (const i in publicSignals) {
@@ -130,38 +128,3 @@ function addBitmaskToByte(byte, yIsPositive) {
         return byte;
     }
 }
-
-export async function generateRustProof() {
-    const wasmPath = process.argv[2];
-    const zkeyPath = process.argv[3];
-    const proofInputPath = process.argv[4];
-    if (!proofInputPath) {
-        throw new Error('Input path not specified')
-    }
-
-    const outputPath = process.argv[5]
-        ? `${process.argv[5]}/proof.rs`
-        : 'proof.rs';
-    const proofInputFile = fs.readFileSync(proofInputPath, 'utf8')
-    const proofInputs = JSON.parse(proofInputFile)
-
-    const { proof, publicSignals } = await fullProve(
-        proofInputs,
-        wasmPath,
-        zkeyPath
-    )
-
-    let proofArr = parseProofToBytesArray(proof)
-    proofArr = [...proofArr.proofA, ...proofArr.proofB, ...proofArr.proofC];
-    const publicSignalsArr = parseToBytesArray(publicSignals)
-
-    const rustOutput = `pub const PROOF: [u8; 256] = [${proofArr}];
-
-pub const PUBLIC_SIGNALS: [[u8; 32]; 1] = [[${publicSignalsArr}]];
-`;
-
-    fs.writeFileSync(outputPath, rustOutput)
-    console.log('✅ Rust proof written to', outputPath)
-}
-
-generateRustProof().catch(console.error)
