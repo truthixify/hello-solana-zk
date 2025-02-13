@@ -1,9 +1,9 @@
 # Solana Groth16 Verifier
 
-A Groth16 zero-knowledge proof verifier implemented as a Solana smart contract.
+A Groth16 zero-knowledge proof verifier implemented on Solana blockchain.
 
 ## Overview
-This project provides a Solana smart contract that verifies zero-knowledge proofs generated using the Groth16 proving system. Groth16 is a widely used zk-SNARK (zero-knowledge Succinct Non-Interactive Argument of Knowledge) proof system that allows efficient and private verification of computations.
+This project provides a verifier that verifies zero-knowledge proofs generated using the Groth16 proving system. Groth16 is a widely used zk-SNARK (zero-knowledge Succinct Non-Interactive Argument of Knowledge) proof system that allows efficient and private verification of computations.
 
 ## Features
 - Implements Groth16 proof verification on Solana.
